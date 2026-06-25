@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>CraftBlox Mobile Online</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #87CEEB; font-family: sans-serif; user-select: none; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        .joystick-container {
+            position: absolute; bottom: 40px; left: 40px;
+            width: 120px; height: 120px; background: rgba(255,255,255,0.2);
+            border: 2px solid rgba(255,255,255,0.4); border-radius: 50%;
+            display: flex; align-items: center; justify-content: center; touch-action: none;
+        }
+        .joystick-stick { width: 50px; height: 50px; background: rgba(255,255,255,0.6); border-radius: 50%; }
+        #jumpBtn {
+            position: absolute; bottom: 60px; right: 40px;
+            width: 70px; height: 70px; background: rgba(255,255,255,0.4);
+            border: 2px solid rgba(255,255,255,0.6); border-radius: 50%;
+            color: white; font-weight: bold; font-size: 14px;
+            display: flex; align-items: center; justify-content: center; touch-action: none;
+        }
+        #ui { position: absolute; top: 10px; left: 10px; color: white; text-shadow: 1px 1px 2px black; font-size: 12px; pointer-events: none; }
+    </style>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+</head>
+<body>
+
+    <div id="ui">
+        <h2>CraftBlox Online</h2>
+        <p id="status">Подключение к серверу...</p>
+        <p>Игроков онлайн: <span id="onlineCount">1</span></p>
+    </div>
+
+    <div class="joystick-container" id="joyContainer">
+        <div class="joystick-stick" id="joyStick"></div>
+    </div>
+
+    <div id="jumpBtn">ПРЫЖОК</div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // Игрок
+        const player = {
+            id: null,
+            x: Math.random() * 4 - 2, y: 1.8, z: -5,
+            yaw: 0, pitch: 0,
+            speed: 0.06, vY: 0, gravity: 0.01, isGrounded: false,
+            type: Math.random() > 0.5 ? 'minecraft' : 'roblox'
+        };
+
+        // Сетевые игроки
+        let otherPlayers = {};
+
+        // ВАЖНО: Замените этот URL на адрес вашего сервера после деплоя на Render.com
+        const socket = io('https://craftblox-server.onrender.com', { autoConnect: false });
+        socket.connect();
+
+        socket.on('connect', () => {
+            document.getElementById('status').innerText = "Успешно подключено!";
+            player.id = socket.id;
+            socket.emit('init', { x: player.x, y: player.y, z: player.z, type: player.type });
+        });
+
+        socket.on('currentPlayers', (players) => {
+            otherPlayers = {};
+            Object.keys(players).forEach(id => {
+                if (id !== socket.id) otherPlayers[id] = players[id];
+            });
+            updateOnlineCount();
+        });
+
+        socket.on('newPlayer', (data) => {
+            otherPlayers[data.id] = data;
+            updateOnlineCount();
+        });
+
+        socket.on('playerMoved', (data) => {
+            if (otherPlayers[data.id]) {
+                otherPlayers[data.id].x = data.x;
+                otherPlayers[data.id].y = data.y;
+                otherPlayers[data.id].z = data.z;
+            }
+        });
+
+        socket.on('playerDisconnected', (id) => {
+            delete otherPlayers[id];
+            updateOnlineCount();
+        });
+
+        function updateOnlineCount() {
+            document.getElementById('onlineCount').innerText = Object.keys(otherPlayers).length + 1;
+        }
+
+        // Отправка координат (30 обновлений в секунду)
+        setInterval(() => {
+            if (socket.connected) {
+                socket.emit('move', { x: player.x, y: player.y, z: player.z });
+            }
+        }, 33);
+
+        // Логика управления (Тачскрин / Джойстик)
+        let moveInput = { x: 0, y: 0 };
+        let lookTouchId = null;
+        let lastTouchX = 0, lastTouchY = 0;
+
+        const joyContainer = document.getElementById('joyContainer');
+        const joyStick = document.getElementById('joyStick');
+        let joyTouchId = null;
+
+        joyContainer.addEventListener('touchstart', e => {
+            if (joyTouchId === null) {
+                joyTouchId = e.changedTouches[0].identifier;
+                updateJoystick(e.changedTouches[0]);
+            }
+        });
+
+        window.addEventListener('touchmove', e => {
+            for (let touch of e.touches) {
+                if (touch.identifier === joyTouchId) updateJoystick(touch);
+                if (touch.identifier === lookTouchId) {
+                    let dx = touch.clientX - lastTouchX;
+                    let dy = touch.clientY - lastTouchY;
+                    player.yaw -= dx * 0.005;
+                    player.pitch -= dy * 0.005;
+                    player.pitch = Math.max(-Math.PI/2.2, Math.min(Math.PI/2.2, player.pitch));
+                    lastTouchX = touch.clientX;
+                    lastTouchY = touch.clientY;
+                }
+            }
+        });
+
+        window.addEventListener('touchend', e => {
+            for (let touch of e.changedTouches) {
+                if (touch.identifier === joyTouchId) {
+                    joyTouchId = null;
+                    joyStick.style.transform = `translate(0px, 0px)`;
+                    moveInput = { x: 0, y: 0 };
+                }
+                if (touch.identifier === lookTouchId) lookTouchId = null;
+            }
+        });
+
+        function updateJoystick(touch) {
+            const rect = joyContainer.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            let dx = touch.clientX - centerX;
+            let dy = touch.clientY - centerY;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            const maxDist = rect.width / 2;
+
+            if (dist > maxDist) {
+                dx = (dx / dist) * maxDist;
+                dy = (dy / dist) * maxDist;
+            }
+
+            joyStick.style.transform = `translate(${dx}px, ${dy}px)`;
+            moveInput.x = dx / maxDist;
+            moveInput.y = -dy / maxDist;
+        }
+
+        window.addEventListener('touchstart', e => {
+            for (let touch of e.changedTouches) {
+                if (touch.clientX > window.innerWidth / 2 && touch.target.id !== 'jumpBtn' && joyTouchId !== touch.identifier) {
+                    if (lookTouchId === null) {
+                        lookTouchId = touch.identifier;
+                        lastTouchX = touch.clientX;
+                        lastTouchY = touch.clientY;
+                    }
+                }
+            }
+        });
+
+        document.getElementById('jumpBtn').addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            if (player.isGrounded) {
+                player.vY = 0.22;
+                player.isGrounded = false;
+            }
+        });
+
+        // Создаем карту (земля из блоков)
+        const blocks = [];
+        for(let x = -10; x <= 10; x++) {
+            for(let z = -10; z <= 10; z++) {
+                blocks.push({x: x, y: 0, z: z, color: '#557a2b'}); 
+            }
+        }
+
+        // Проекция 3D координат в 2D координаты экрана
+        function project(x, y, z) {
+            let dx = x - player.x;
+            let dy = y - player.y;
+            let dz = z - player.z;
+
+            let cosY = Math.cos(player.yaw), sinY = Math.sin(player.yaw);
+            let rx = dx * cosY - dz * sinY;
+            let rz = dx * sinY + dz * cosY;
+
+            let cosX = Math.cos(player.pitch), sinX = Math.sin(player.pitch);
+            let ry = dy * cosX - rz * sinX;
+            let fz = dy * sinX + rz * cosX;
+
+            if (fz <= 0.2) return null; 
+
+            const fov = 300; 
+            return {
+                x: (rx * fov) / fz + canvas.width / 2,
+                y: (ry * fov) / fz + canvas.height / 2,
+                size: (fov / fz),
+                depth: fz
+            };
+        }
+
+        // Отрисовка скинов (Майнкрафт против Роблокс)
+        function drawPlayerModel(proj, type) {
+            ctx.fillStyle = type === 'minecraft' ? '#22aaff' : '#ff4444';
+            ctx.strokeStyle = '#000000';
+            ctx.lineWidth = 2;
+
+            let w = proj.size * 0.6;
+            let h = type === 'minecraft' ? proj.size * 1.2 : proj.size * 1.6;
+
+            ctx.fillRect(proj.x - w/2, proj.y - h, w, h);
+            ctx.strokeRect(proj.x - w/2, proj.y - h, w, h);
+
+            // Голова
+            ctx.fillStyle = '#ffcc99';
+            let head = proj.size * 0.4;
+            ctx.fillRect(proj.x - head/2, proj.y - h - head, head, head);
+            ctx.strokeRect(proj.x - head/2, proj.y - h - head, head, head);
+        }
+
+        function loop() {
+            if (moveInput.x !== 0 || moveInput.y !== 0) {
+                player.x += Math.sin(player.yaw) * moveInput.y * player.speed;
+                player.z += Math.cos(player.yaw) * moveInput.y * player.speed;
+                player.x += Math.cos(player.yaw) * moveInput.x * player.speed;
+                player.z -= Math.sin(player.yaw) * moveInput.x * player.speed;
+            }
+
+            player.vY -= player.gravity;
+            player.y += player.vY;
+            if (player.y <= 1.8) { player.y = 1.8; player.vY = 0; player.isGrounded = true; }
+
+            ctx.fillStyle = '#87CEEB';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            const renderQueue = [];
+
+            // Рендер блоков земли
+            for (let b of blocks) {
+                let p = project(b.x, b.y, b.z);
+                if (p) renderQueue.push({ depth: p.depth, type: 'block', p: p, color: b.color });
+            }
+
+            // Рендер сетевых игроков
+            Object.keys(otherPlayers).forEach(id => {
+                let pObj = otherPlayers[id];
+                let p = project(pObj.x, pObj.y, pObj.z);
+                if (p) renderQueue.push({ depth: p.depth, type: 'player', p: p, pType: pObj.type });
+            });
+
+            // Сортировка (3D алгоритм художника): сначала рисуем дальние объекты, потом близкие
+            renderQueue.sort((a, b) => b.depth - a.depth);
+
+            for (let item of renderQueue) {
+                if (item.type === 'block') {
+                    ctx.fillStyle = item.color;
+                    ctx.strokeStyle = '#000000';
+                    ctx.lineWidth = 1;
+                    ctx.fillRect(item.p.x - item.p.size/2, item.p.y - item.p.size/2, item.p.size, item.p.size);
+                    ctx.strokeRect(item.p.x - item.p.size/2, item.p.y - item.p.size/2, item.p.size, item.p.size);
+                } else if (item.type === 'player') {
+                    drawPlayerModel(item.p, item.pType);
+                }
+            }
+
+            requestAnimationFrame(loop);
+        }
+        loop();
+    </script>
+</body>
+</html>
